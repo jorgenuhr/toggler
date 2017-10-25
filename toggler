@@ -566,6 +566,7 @@ fi
 					"a = Add item"
 					"c = Configure script"
 					"d = Delete current item"
+					"f = Edit display filter"
 					"i = Invert selected"
 					"q = Quit"
 					"r = Execute command with selected items"
