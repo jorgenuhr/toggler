@@ -22,7 +22,7 @@ File containing the list of items and toggle status, created when running for th
 
 ### KEYS
 Press `h` to display a help screen inside toggler
-
+```
 The following keys are available.
 a = Add item
 c = Configure script
@@ -33,4 +33,5 @@ q = Quit
 r = Execute command with selected items
 + = Select all
 - = Deselect all
+```
 
