@@ -1,0 +1,646 @@
+#!/bin/bash
+#
+# https://github.com/jorgenuhr/toggler
+#
+################################################################################
+
+# save screen
+tput smcup
+
+# disable echo 
+stty -echo
+
+##
+## TRAPS
+##
+trap bashtrap1 SIGHUP 
+trap bashtrap2 SIGINT 
+trap bashtrap15 SIGTERM
+
+# function for SIGHUP 
+function bashtrap1() {
+	return
+}
+
+# function for SIGINT (ctrl+c) 
+function bashtrap2() {
+	waitbg
+	resetterm
+	echo -n -e "\n  CTRL+C Detected!, Quitting\n\n"
+	exit 1;
+}
+
+# function for SIGTERM (kill) sent to pid
+function bashtrap15() {
+	waitbg
+	resetterm
+	echo -n -e "\n  Hasta la vista, script was just terminated.\n\n"
+	exit 0;
+}
+
+##
+## VARIABLES
+##
+
+# name of script
+export appname="toggler"
+
+# version of script
+export version="0.5"
+
+# width of display
+termw=`tput cols`;
+
+# height of display
+termh=`tput lines`;
+
+# rows to jump on page up/down key press
+pagejump="10";
+
+# file containing configuration variables
+export configfile="${HOME}/.${appname}.conf"
+
+# default file which contains all items to list
+# this is overrided if specified in config file
+export listfile="/tmp/${appname}_list"
+
+# command to execute
+# this is overrided if specified in config file
+export command="echo"
+
+# print debug information to file
+export debug="off"
+debugfile="/tmp/${appname}_debug.out"
+
+# source config file if it exists
+if [ -f ${configfile} ]; then
+	# TODO add checks so nothing nasty is sourced
+	source ${configfile}
+else
+	# create default config file
+	echo "export listfile=\"${listfile}\"" >> ${configfile}
+	echo "export command=\"${command}\"" >> ${configfile}
+fi
+
+
+##
+## FUNCTIONS
+##
+
+# reset the terminal
+function resetterm() {
+	tput sgr0
+	tput cvvis
+	tput rmcup
+	stty echo
+	stty sane
+}
+
+# check if any background jobs are running and print information
+function waitbg() {
+	while [ "`jobs -p | wc -l`" -gt "0" ]; do
+		tput clear
+		echo -e "Waiting for background jobs to finish!\n"
+		jobs -l
+		sleep 1
+	done
+}
+
+# function called when pressing "q" in menu
+function exitscript() {
+	waitbg
+	resetterm
+	echo -n -e "\n $1 Exiting script.\n\n"
+	exit 0;
+}
+
+# hack to read all get special chars from input
+function getkey() {
+	if read -rsn1 _choice; then
+		while read -rsn1 -t 0.001 ; do
+			_choice+="${REPLY}"
+		done
+	fi
+
+	echo ${_choice}
+}
+
+# config menu
+function config() {
+	tput clear
+	tput cvvis
+	echo -e "Edit setting\n"
+
+	if [ "${1}" == "conf_command" ]; then
+		echo "Command to execute on selected items"
+		echo -e "[${command}]\n"
+
+		stty echo
+		read -er -p "New value: " value
+		stty -echo
+
+		if [ ! "${value}" == "" ]; then
+			sed -i "/export command/d" ${configfile}
+			echo "export command=\"${value}\"" >> ${configfile}
+			export command="${value}"
+		fi
+
+	elif [ "${1}" == "conf_listfile" ]; then
+		echo "Location of file with list of items"
+		echo -e "[${listfile}]\n"
+
+		stty echo
+		read -er -p "New value: " value
+		stty -echo
+
+		if [ ! "${value}" == "" ]; then
+			if [[ -f ${listfile} && ! -f ${value} ]]; then
+				mv ${listfile} ${value}
+			fi
+
+			if [ ! $? == 0 ]; then
+				echo "Could not move the old file to new location"
+			fi
+
+			sed -i "/export listfile/d" ${configfile}
+			echo "export listfile=\"${value}\"" >> ${configfile}
+			export listfile="${value}"
+		fi
+	fi
+
+	tput clear
+	echo "Configuration menu"
+	printf "\n%-5s %5s\n %5s %s\n" "1)" "Command to execute on selected items" "" "[${command}]"
+	printf "\n%-5s %5s\n %5s %s\n" "2)" "Location of file with list of items" "" "[${listfile}]"
+
+	printf "\n%-5s %5s\n\n" "q)" "Return to list"
+	printf "%s" "Enter option to change: "
+
+	option=""
+	until [ ! "${option}" == "" ]; do
+
+		read -sn1 option
+
+		case "${option}" in
+			1)
+				config "conf_command"
+			;;
+			2)
+				config "conf_listfile"
+			;;
+
+			q) # return to list
+				return
+			;;
+			*) # other char
+				option=""
+			;;
+		esac
+	done
+}
+
+# draw header
+function header() {
+	tput clear
+	tput cup 0 0
+
+	echo " [${appname} v${version}] [Filter: ${filter}]"
+	tput sgr0	
+}
+
+# navigation function
+function navigate() {
+	# check if function was called to reset positions
+	if [ "${1}" == "reset" ]; then
+		currentindex="0"
+		start="0"
+		return
+	fi
+
+	# check if function was called to move "cursor" up in the list
+	if [[ "${1}" == "-" && "${2}" -gt "0" ]]; then
+		# check if we already are at top
+		if [ "${currentindex}" == "0" ]; then
+			return
+		fi
+
+		# check if we are moving bellow the absolute first index in the array on the same page
+		if [ "$((${currentindex}-${2}))" -le "0" ]; then
+			currentindex="0"
+			start="0"
+			return
+		fi
+
+		# check if we need to move up some page
+		if [ "$((${currentindex}-${2}))" -lt "${firstindex}" ]; then
+			# new position of currentindex
+			((currentindex=${currentindex}-${2}))
+
+			# check if we we are moving across several pages
+			if [ "${currentindex}" -lt "$((${firstindex}-${pagesize}))" ]; then
+				until [ "${currentindex}" -ge "${start}" ]; do
+					((start=${start}-${pagesize}))
+
+					if [ "${start}" -le "0" ]; then
+						start="0";
+						break
+					fi
+				done
+
+			else
+				((start=${firstindex}-${pagesize}))
+			fi
+
+		else
+			((currentindex=${currentindex}-${2}))
+			start="${firstindex}"
+		fi
+	fi
+
+	# check if function was called to move "cursor" down in the list
+	if [[ "${1}" == "+" && "${2}" -gt "0" ]]; then
+		# check if we already are at bottom
+		if [ "${currentindex}" == "$((${elements}-1))" ]; then
+			return
+		fi
+
+		# check if we are moving above the last index in the array
+		if [ "$((${currentindex}+${2}))" -ge "$((${elements}-1))" ]; then
+			((currentindex=${elements}-1))
+
+			# check if we already are on last page
+			if [ "${lastindex}" == "$((${elements}-1))" ]; then
+				start="${firstindex}"
+			else
+				((start=${elements}-${pagesize}))
+			fi
+
+			if [ "${start}" -le "0" ]; then
+				start="0"
+			fi
+			return
+		fi
+
+		# check if we need to move down some page
+		if [ "$((${currentindex}+${2}))" -gt "${lastindex}" ]; then
+			# new position of currentindex
+			((currentindex=${currentindex}+${2}))
+
+			# check if we we are moving across several pages
+			if [ "${currentindex}" -ge "$((${lastindex}+1+${pagesize}))" ]; then
+				((start=${lastindex}+1))
+
+				until [ "${currentindex}" -lt "$((${start}+${pagesize}-1))" ]; do
+					((start=${start}+${pagesize}))
+
+					if [ "${start}" -ge $((${elements}-1-${pagesize})) ]; then
+						((start=${elements}-1-${pagesize}))
+						break
+					fi
+				done
+
+			else
+				((start=${lastindex}+1))
+			fi
+
+		else
+			((currentindex=${currentindex}+${2}))
+			start="${firstindex}"
+		fi
+
+	fi
+}
+
+
+##
+## MAIN LOOP
+##
+while [ 1 ]; do
+	header
+	tput civis
+
+	unset list
+	unset toggle
+
+	# check if file with list of objects exists and is not empty
+	if [ -s ${listfile} ]; then
+		# read file into array
+		i=0
+		while read line; do
+			first="${line%%=*}"
+			second="${line#*=}"
+
+			# skip any duplicates
+			if [[ "${i}" -gt "0" && "${first}" == ${list[$((${i}-1))]} ]]; then
+				duplicate="yes"
+			else
+				list[${i}]="${first}"
+				toggle[${i}]="${second}"
+				((i=i+1))
+			fi
+		done < <(sed "/^\s*$/d;/^#/d" ${listfile} | sort -u | grep "${filter}.*=[0|1]$" 2>>/tmp/logfile)
+
+	else
+		list=("Example item")
+		toggle=("0")
+		echo "# This is an example record with comment" > ${listfile}
+		echo "Example item=0" >> ${listfile}
+	fi
+
+	#  check if display have been resized, in that case reset values
+	if [[ "${termw}" != "`tput cols`" || "${termh}" != "`tput lines`" ]]; then
+		start=""
+	fi
+
+	base="2"
+	xbase="5"
+	termw=`tput cols`
+	termh=`tput lines`
+	((end=${termh}-2))
+	((pagesize=${end}-${base}+1))
+	elements=${#list[@]}
+
+	# set currentindex if empty
+	if [[ "${currentindex}" == "" ]]; then
+		currentindex="0"
+	fi
+
+	# set starting array element if empty
+	if [ "${start}" == "" ]; then
+		start="0"
+	fi
+
+	# tmpbase is just a counter for knowing which line we are at
+	tmpbase="${base}"
+
+	# firstindex is used to keep track of which array element is the first one displayed
+	firstindex=""
+
+	# move cursor to baseline
+	tput cup ${base} 0
+
+	if [ "${elements}" == "0" ]; then
+		tput cup ${base} ${xbase}
+		echo "Could not find any items in list with active filter"
+	else
+		# print the items
+		for (( i = ${start} ; i < ${#list[@]} ; i++ )); do
+			# get the index of the first item displayed
+			if [ "${firstindex}" == "" ]; then
+				firstindex="${i}"
+			fi
+
+			# check if current item is the one selected
+			if [ "${currentindex}" == "${i}" ]; then
+				shownav="---> "
+
+				# get status of toggle for this item
+				if [ "${toggle[$i]}" == "0" ]; then
+					current="${list[$i]}=0"	
+					newvalue="${list[$i]}=1"
+
+				elif [ "${toggle[$i]}" == "1" ]; then
+					current="${list[$i]}=1"
+					newvalue="${list[$i]}=0"
+
+				else
+					current="${list[$i]}"
+					newvalue="${list[$i]}=0"
+				fi
+			else
+				shownav=""
+			fi
+
+			# check if item is toggled or not
+			if [ "${toggle[$i]}" == "1" ]; then
+				printf "%-5s %s %s\n" "${shownav}" "[x]" "${list[$i]}"
+			elif [ "${toggle[$i]}" == "0" ]; then
+				printf "%-5s %s %s\n" "${shownav}" "[ ]" "${list[$i]}"
+			else
+				# unknown status (second parameter missing in file)
+				printf "%-5s %s %s\n" "${shownav}" "[!]" "${list[$i]}"
+			fi
+
+			# set variable with the last index we displayed
+			lastindex=${i}
+
+			# update tmpbase to next line
+			((tmpbase=tmpbase+1))
+
+			# check if we reach the end of screen ($end), if so stop
+			if [ "${tmpbase}" -gt "${end}" ]; then
+				break
+			fi
+		done
+	fi
+
+#=DEBUG=======================================
+if [ "${debug}" == "on" ]; then
+cat >> ${debugfile} << EOF
+-[ `date` ]---------------------
+base=${base}
+end=${end}
+start=${start}
+firstindex=${firstindex}
+lastindex=${lastindex}
+currentindex=${currentindex}
+current=${current}
+elements=${#list[@]}
+termw=${termw}
+termh=${termh}
+pagesize=${pagesize}
+empty=${empty}
+
+EOF
+fi
+#=DEBUG=======================================
+
+	_choice=""
+	until [ ! "${_choice}" == "" ]; do
+		# call function to read input key
+		_choice=$(getkey)
+
+		# sleep some to avoid massive keyboard repets
+			sleep 0.025		
+
+		case "${_choice}" in
+			$'\e[A') # up
+				navigate "-" "1"
+				_choice="placeholder"
+			;;
+			$'\e[B') # down
+				navigate "+" "1"
+				_choice="placeholder"
+			;;
+			$'\e[5~') # pageup
+				navigate "-" "${pagejump}"
+				_choice="placeholder"
+			;;
+			$'\e[6~') # pagedown
+				navigate "+" "${pagejump}"
+				_choice="placeholder"
+			;;
+			"") # space or enter
+				# toggle status of item in listfile
+				sed -i "s/^${current}\$/${newvalue}/g" ${listfile}
+				navigate "+" "1"
+				_choice="placeholder"
+			;;
+			r) # run stuff
+				# get all toggled items from file
+				items="`sort -u ${listfile} | grep "${filter}.*=1$" | awk -F= '{if ($2=="1") {printf $1 " "}}'`"
+
+				# if we found nothing do nothing
+				if [ "${items}" == "" ]; then
+					_choice="placeholder"
+				else
+					# ask user for ok before continue
+					tput clear
+
+					echo -e "Warning! About to execute the following\n"
+					echo -e "${command} ${items%[[:space:]]} &\n"
+
+					goforit=""
+					until [[ "${goforit}" == "y" || "${goforit}" == "n" ]]; do
+						tput cvvis
+						stty echo
+						read -p "Execute? [y/n]: " goforit
+						stty -echo
+
+						case "${goforit}" in
+							y)	${command} ${items%[[:space:]]} &	;;
+							n)	_choice=""				;;
+							*)	goforit=""				;;
+						esac
+					done
+				fi
+
+				_choice="placeholder"
+			;;
+			f) # filters
+				oldfilter="${filter}"
+
+				header
+				tput cvvis
+				stty echo
+				tput cup ${base} ${xbase}
+				read -er -p "Filter: " filter
+				tput civis
+				stty -echo
+
+				if [ "${filter}" != ${oldfilter} ]; then
+					navigate "reset"
+				fi
+
+				_choice="placeholder"
+			;;
+			i) # invert toggled
+				# toggle status of items in listfile
+
+				while read line; do
+					sed -i "/${line}/d" ${listfile}
+					echo "${line}" | awk -F= '{if ($2=="1") {print $1 "=0"} else {print $1 "=1"} }' >> ${listfile}
+
+				done < <(sed "/^\s*$/d;/^#/d" ${listfile} | grep "${filter}.*=[0|1]$" 2>>/tmp/logfile)
+
+				_choice="placeholder"
+			;;
+			+) # select all
+				# toggle status of items in listfile
+				sed -i "s/=[0|1]/=1/g" ${listfile}
+
+				_choice="placeholder"
+			;;
+			-) # select none
+				# toggle status of items in listfile
+				sed -i "s/=[0|1]/=0/g" ${listfile}
+
+				_choice="placeholder"
+			;;
+			h) # help screen
+				helptext=(
+					"Use up/down key to navigate in list."
+					"Use PgUp or PgDn to move ${pagejump} steps at once."
+					"Hit space or enter to toggle selected item."
+					""
+					"a = Add item"
+					"c = Configure script"
+					"d = Delete current item"
+					"i = Invert selected"
+					"q = Quit"
+					"r = Execute command with selected items"
+					"+ = Select all"
+					"- = Deselect all"
+					""
+					"<Press any key to continue>"
+				)
+
+				header
+
+				for (( i = 0 ; i < ${#helptext[@]} ; i++ )); do
+					tput cup $((${base}+${i})) ${xbase}
+					echo "${helptext[${i}]}"
+				done
+
+				read -sn1 junk
+
+				_choice="placeholder"
+			;;
+			c) # config
+				config
+				_choice="placeholder"
+			;;
+			a) # add item to list
+				header
+				tput cvvis
+				stty echo
+				tput cup ${base} ${xbase}
+				read -er -p "Add item to list: " newitem
+				tput civis
+				stty -echo
+
+				if [ "${newitem}" != "" ]; then
+					# add item if it doesnt already exist
+					if [ "`grep "^${newitem}=" ${listfile} | wc -l`" -eq "0" ]; then
+						tmpvar=`echo "${newitem}" | sed "s/=//g"`
+						echo "${tmpvar}=0" >> ${listfile}
+					fi
+				fi
+
+				_choice="placeholder"
+			;;
+			d) # delete item from list
+				goforit=""
+				until [[ "${goforit}" == "y" || "${goforit}" == "n" ]]; do
+					header
+					tput cvvis
+					stty echo
+					tput cup ${base} ${xbase}
+					read -p "Delete `echo "${current}" | awk -F= '{print $1}'` from list? [y/n]: " goforit
+					stty -echo
+
+					case "${goforit}" in
+						y)
+							sed -i "/^${current}\$/d" ${listfile}
+
+							if [ "${currentindex}" -eq "${lastindex}" ]; then
+								((currentindex=${currentindex}-1))
+							fi
+						;;
+						n)	_choice="placeholder"			;;
+						*)	goforit=""				;;
+					esac
+				done
+
+				_choice="placeholder"
+			;;
+			q) # exit script
+				exitscript
+			;;
+			*) # other char
+				_choice=""
+			;;
+		esac
+	done
+
+done
