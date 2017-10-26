@@ -46,7 +46,7 @@ function bashtrap15() {
 export appname="toggler"
 
 # version of script
-export version="0.5"
+export version="0.6"
 
 # width of display
 termw=`tput cols`;
@@ -62,7 +62,7 @@ export configfile="${HOME}/.${appname}.conf"
 
 # default file which contains all items to list
 # this is overrided if specified in config file
-export listfile="/tmp/${appname}_list"
+export listfile="${HOME}/.${appname}.list"
 
 # command to execute
 # this is overrided if specified in config file
@@ -77,9 +77,16 @@ if [ -f ${configfile} ]; then
 	# TODO add checks so nothing nasty is sourced
 	source ${configfile}
 else
-	# create default config file
-	echo "export listfile=\"${listfile}\"" >> ${configfile}
-	echo "export command=\"${command}\"" >> ${configfile}
+	# check that we can write to users home directory
+	if [ -w ~/ ] ; then 
+		# create default config file
+		echo "export listfile=\"${listfile}\"" >> ${configfile}
+		echo "export command=\"${command}\"" >> ${configfile}
+	else
+		# exit script
+		echo "Could not create configuration file in users home directory, aborting script"
+		exit 2
+	fi
 fi
 
 
@@ -341,10 +348,17 @@ while [ 1 ]; do
 		done < <(sed "/^\s*$/d;/^#/d" ${listfile} | sort -u | grep "${filter}.*=[0|1]$" 2>>/tmp/logfile)
 
 	else
-		list=("Example item")
-		toggle=("0")
-		echo "# This is an example record with comment" > ${listfile}
-		echo "Example item=0" >> ${listfile}
+		# check that we can write to users home directory
+		if [ -w ~/ ] ; then
+			list=("Example item")
+			toggle=("0")
+			echo "# This is an example record with comment" > ${listfile}
+			echo "Example item=0" >> ${listfile}
+		else
+			# exit script
+			echo "Could not create default list file in users home directory, aborting script"
+			exit 2
+		fi
 	fi
 
 	#  check if display have been resized, in that case reset values
