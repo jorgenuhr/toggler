@@ -16,7 +16,7 @@ none
 Configuration file for the script, created automatic when running the script for the first time.
 
 
-`/tmp/toggler_list`
+`~/.toggler.list`
 
 File containing the list of items and toggle status, created when running for the first time. The location of this file can be changed by either editing `~/.toggler.conf` or pressing `c` when running the script
 
